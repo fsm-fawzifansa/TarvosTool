@@ -1,6 +1,6 @@
 # TarvosTool
 
-A macOS desktop tool for talking to **Würth Elektronik Tarvos-e** radio modules over a USB serial connection (FTDI VCP → UART). Use it to:
+A macOS and Windows desktop tool for talking to **Würth Elektronik Tarvos-e** radio modules over a USB serial connection (FTDI VCP → UART). Use it to:
 
 - send any of the module's documented commands from a **Command Builder**, with a live preview of the exact bytes on the wire,
 - watch every transmitted and received frame in a decoded **Communication Log**,
@@ -15,18 +15,20 @@ It speaks the module's binary WE-ProWare serial protocol. Built with C++17 and w
 
 ## Requirements
 
-| Requirement | Install |
-|---|---|
-| macOS | Apple Silicon or Intel |
-| Xcode Command Line Tools | `xcode-select --install` |
-| Homebrew | https://brew.sh |
-| CMake + wxWidgets | `brew install cmake wxwidgets` |
-| FTDI VCP driver (for FTDI-based boards) | https://ftdichip.com/drivers/vcp-drivers/ — reboot after installing |
-| A Tarvos-e module or EV-kit | connected over USB |
+| | macOS | Windows |
+|---|---|---|
+| OS | Apple Silicon or Intel | Windows 10 / 11, 64-bit |
+| Compiler | Xcode Command Line Tools: `xcode-select --install` | Visual Studio 2022 (Desktop development with C++) |
+| Build tools | `brew install cmake wxwidgets` | CMake and [vcpkg](https://vcpkg.io) |
+| USB driver | [FTDI VCP driver](https://ftdichip.com/drivers/vcp-drivers/) for FTDI boards, then reboot | same (Windows usually installs it automatically) |
+
+You also need a Tarvos-e module or EV-kit connected over USB.
 
 ---
 
 ## Build and run
+
+### macOS
 
 ```bash
 git clone https://github.com/fsm-fawzifansa/TarvosTool.git
@@ -37,15 +39,24 @@ make -j$(sysctl -n hw.logicalcpu)
 open TarvosTool.app
 ```
 
-The build targets arm64 by default. For an Intel Mac:
+The build targets arm64 by default. For an Intel Mac, add `-DCMAKE_OSX_ARCHITECTURES=x86_64`.
 
-```bash
-cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=x86_64
+### Windows
+
+In a Developer PowerShell for Visual Studio:
+
+```powershell
+git clone https://github.com/fsm-fawzifansa/TarvosTool.git
+cd TarvosTool
+vcpkg install wxwidgets:x64-windows
+cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="<path-to-vcpkg>/scripts/buildsystems/vcpkg.cmake"
+cmake --build build --config Release
+.\build\Release\TarvosTool.exe
 ```
 
 ### VS Code
 
-Open the folder and press **⌘⇧B** to configure and build. IntelliSense reads `compile_commands.json`, which is generated in the project root by the first build. If you see squiggles before that, run **C/C++: Reset IntelliSense Database** after building.
+Open the folder and press **⌘⇧B** (macOS) to configure and build. IntelliSense reads `compile_commands.json`, which the first build generates in the project root. If you see squiggles before that, run **C/C++: Reset IntelliSense Database** after building.
 
 ---
 
@@ -53,11 +64,9 @@ Open the folder and press **⌘⇧B** to configure and build. IntelliSense reads
 
 ### 1. Connect a module
 
-1. Plug in the module and check that its port exists:
-   ```bash
-   ls /dev/cu.*
-   ```
-   Always use the `cu.*` node, not `tty.*`. The `tty.*` node waits for a carrier signal and will not work for host-initiated communication.
+1. Plug in the module.
+   - **macOS:** check that its port exists with `ls /dev/cu.*`. Always use the `cu.*` node, not `tty.*`. The `tty.*` node waits for a carrier signal and will not work for host-initiated communication.
+   - **Windows:** the module shows up as a COM port (for example `COM3`) in Device Manager under *Ports (COM & LPT)*.
 2. In TarvosTool click **Refresh**, pick the port, leave the baud rate at **115200** unless you changed it on the module, and click **Connect**.
 
 The status bar shows the connection state and the TX/RX byte counters.
@@ -121,8 +130,9 @@ Check the Tarvos-e manual for your firmware version for the exact meaning of eac
 TarvosTool/
 ├── CMakeLists.txt
 ├── LICENSE
+├── .github/workflows/       CI build for macOS and Windows
 ├── include/
-│   ├── SerialPort.h         POSIX serial port (cu.* devices, 8N1)
+│   ├── SerialPort.h         serial port (POSIX cu.* / Win32 COM, 8N1)
 │   ├── TarvosProtocol.h     frame builder, stateful parser, command constants
 │   ├── MainFrame.h          main window: connection, log, command builder
 │   └── ChatFrame.h          chat window

@@ -4,7 +4,8 @@
 #include <vector>
 #include <cstdint>
 
-/// POSIX-based serial port wrapper for FTDI VCP devices on macOS.
+/// Serial port wrapper for USB-UART adapters (FTDI VCP etc.).
+/// POSIX (macOS) and Win32 (COM ports) back ends share this interface.
 /// All I/O is non-blocking; Read() returns immediately with whatever bytes
 /// are available (up to maxBytes). Write() is blocking.
 class SerialPort {
@@ -12,7 +13,8 @@ public:
     SerialPort() = default;
     ~SerialPort();
 
-    /// Open the given port (e.g. "/dev/tty.usbserial-A10KI1GG") at baudRate.
+    /// Open the given port (e.g. "/dev/cu.usbserial-A10KI1GG" on macOS or "COM3"
+    /// on Windows) at baudRate.
     /// Returns true on success. Leaves port closed and returns false on error.
     bool Open(const std::string& port, int baudRate = 115200);
 
@@ -29,8 +31,8 @@ public:
     /// bytes are available (may be empty). Returns empty vector on error.
     std::vector<uint8_t> Read(size_t maxBytes = 512);
 
-    /// Scan /dev/tty.usbserial-* and /dev/tty.SLAB_USBtoUART* for connected
-    /// FTDI / CP210x devices. Returns a sorted list of device paths.
+    /// List connected serial ports: /dev/cu.* USB-serial devices on macOS,
+    /// COM ports on Windows. Returns a sorted list of port names.
     static std::vector<std::string> ListPorts();
 
     /// Total bytes written since Open().
@@ -40,10 +42,14 @@ public:
     size_t BytesRx() const { return m_bytesRx; }
 
 private:
-    /// Apply termios settings for 8N1, no flow control at the given baud.
+    /// Apply 8N1, no flow control at the given baud.
     bool ApplySettings(int baudRate);
 
+#ifdef _WIN32
+    void*  m_handle   = nullptr;   ///< HANDLE; nullptr = closed
+#else
     int    m_fd       = -1;
+#endif
     size_t m_bytesTx  = 0;
     size_t m_bytesRx  = 0;
 };

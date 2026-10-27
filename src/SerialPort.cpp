@@ -17,7 +17,7 @@ SerialPort::~SerialPort() {
     Close();
 }
 
-bool SerialPort::Open(const std::string& port, int baudRate) {
+bool SerialPort::Open(const std::string& port, int baudRate, bool busyFlowControl) {
     Close();
 
     // The \\.\ prefix is required for COM10 and above and is valid for all ports.
@@ -28,7 +28,7 @@ bool SerialPort::Open(const std::string& port, int baudRate) {
     if (h == INVALID_HANDLE_VALUE) return false;
     m_handle = h;
 
-    if (!ApplySettings(baudRate)) {
+    if (!ApplySettings(baudRate, busyFlowControl)) {
         Close();
         return false;
     }
@@ -107,7 +107,7 @@ std::vector<std::string> SerialPort::ListPorts() {
     return ports;
 }
 
-bool SerialPort::ApplySettings(int baudRate) {
+bool SerialPort::ApplySettings(int baudRate, bool busyFlowControl) {
     HANDLE h = ToHandle(m_handle);
 
     DCB dcb{};
@@ -120,7 +120,7 @@ bool SerialPort::ApplySettings(int baudRate) {
     dcb.StopBits = ONESTOPBIT;
     dcb.fBinary  = TRUE;
     dcb.fParity  = FALSE;
-    dcb.fOutxCtsFlow = FALSE;
+    dcb.fOutxCtsFlow = busyFlowControl ? TRUE : FALSE;
     dcb.fOutxDsrFlow = FALSE;
     dcb.fDtrControl  = DTR_CONTROL_ENABLE;
     dcb.fRtsControl  = RTS_CONTROL_ENABLE;
@@ -150,13 +150,17 @@ bool SerialPort::ApplySettings(int baudRate) {
 #include <termios.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <algorithm>
+#ifdef __APPLE__
+#include <IOKit/serial/ioss.h>
+#endif
 
 SerialPort::~SerialPort() {
     Close();
 }
 
-bool SerialPort::Open(const std::string& port, int baudRate) {
+bool SerialPort::Open(const std::string& port, int baudRate, bool busyFlowControl) {
     Close();
 
     m_fd = ::open(port.c_str(), O_RDWR | O_NOCTTY | O_NONBLOCK);
@@ -164,7 +168,7 @@ bool SerialPort::Open(const std::string& port, int baudRate) {
         return false;
     }
 
-    if (!ApplySettings(baudRate)) {
+    if (!ApplySettings(baudRate, busyFlowControl)) {
         Close();
         return false;
     }
@@ -188,11 +192,24 @@ bool SerialPort::IsOpen() const {
 bool SerialPort::Write(const std::vector<uint8_t>& data) {
     if (!IsOpen() || data.empty()) return false;
 
-    ssize_t written = ::write(m_fd, data.data(), data.size());
-    if (written < 0) return false;
+    // The fd is non-blocking: with BUSY flow control the driver holds bytes
+    // back while the module is busy, so wait for the rest instead of failing.
+    size_t done = 0;
+    int waits = 0;
+    while (done < data.size()) {
+        ssize_t n = ::write(m_fd, data.data() + done, data.size() - done);
+        if (n > 0) {
+            done += static_cast<size_t>(n);
+            m_bytesTx += static_cast<size_t>(n);
+            continue;
+        }
+        if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK) return false;
+        if (++waits > 100) return false;              // ~1 s without progress
 
-    m_bytesTx += static_cast<size_t>(written);
-    return static_cast<size_t>(written) == data.size();
+        struct pollfd pfd{ m_fd, POLLOUT, 0 };
+        ::poll(&pfd, 1, 10);
+    }
+    return true;
 }
 
 std::vector<uint8_t> SerialPort::Read(size_t maxBytes) {
@@ -231,20 +248,30 @@ std::vector<std::string> SerialPort::ListPorts() {
     return ports;
 }
 
-bool SerialPort::ApplySettings(int baudRate) {
+bool SerialPort::ApplySettings(int baudRate, bool busyFlowControl) {
     struct termios tty{};
     if (::tcgetattr(m_fd, &tty) != 0) return false;
 
-    // Map integer baud to speed_t constant
+    // Map integer baud to speed_t constant. Rates above 230400 have no B*
+    // constant on macOS; they are set with IOSSIOSPEED after tcsetattr.
     speed_t speed;
+    bool customSpeed = false;
     switch (baudRate) {
         case 9600:   speed = B9600;   break;
         case 19200:  speed = B19200;  break;
         case 38400:  speed = B38400;  break;
         case 57600:  speed = B57600;  break;
         case 115200: speed = B115200; break;
-        default:     speed = B115200; break;
+        case 230400: speed = B230400; break;
+#if defined(B460800) && defined(B921600)
+        case 460800: speed = B460800; break;
+        case 921600: speed = B921600; break;
+#endif
+        default:     speed = B115200; customSpeed = true; break;
     }
+#ifndef __APPLE__
+    if (customSpeed) return false;
+#endif
 
     ::cfsetispeed(&tty, speed);
     ::cfsetospeed(&tty, speed);
@@ -255,8 +282,15 @@ bool SerialPort::ApplySettings(int baudRate) {
     tty.c_cflag &= ~CSIZE;
     tty.c_cflag |=  CS8;      // 8 data bits
 
-    // No hardware flow control
+    // BUSY flow control: only gate our output on CTS. macOS has an output-only
+    // flag; elsewhere CRTSCTS also drives RTS, which stays asserted.
+#ifdef CCTS_OFLOW
+    tty.c_cflag &= ~(CRTSCTS | CCTS_OFLOW);
+    if (busyFlowControl) tty.c_cflag |= CCTS_OFLOW;
+#else
     tty.c_cflag &= ~CRTSCTS;
+    if (busyFlowControl) tty.c_cflag |= CRTSCTS;
+#endif
 
     // Enable receiver, ignore modem status lines
     tty.c_cflag |= CREAD | CLOCAL;
@@ -277,6 +311,12 @@ bool SerialPort::ApplySettings(int baudRate) {
     tty.c_cc[VTIME] = 1;  // 100 ms timeout
 
     if (::tcsetattr(m_fd, TCSANOW, &tty) != 0) return false;
+#ifdef __APPLE__
+    if (customSpeed) {
+        speed_t custom = static_cast<speed_t>(baudRate);
+        if (::ioctl(m_fd, IOSSIOSPEED, &custom) != 0) return false;
+    }
+#endif
     ::tcflush(m_fd, TCIOFLUSH);
     return true;
 }

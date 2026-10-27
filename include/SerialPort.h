@@ -14,9 +14,11 @@ public:
     ~SerialPort();
 
     /// Open the given port (e.g. "/dev/cu.usbserial-A10KI1GG" on macOS or "COM3"
-    /// on Windows) at baudRate.
+    /// on Windows) at baudRate (9600 - 921600).
+    /// busyFlowControl gates every transmitted byte on the CTS input, which is
+    /// where a USB-UART adapter sees the module's BUSY line (manual 5.1.5 / 6.1).
     /// Returns true on success. Leaves port closed and returns false on error.
-    bool Open(const std::string& port, int baudRate = 115200);
+    bool Open(const std::string& port, int baudRate = 115200, bool busyFlowControl = false);
 
     /// Close the port if open. Safe to call when already closed.
     void Close();
@@ -24,7 +26,8 @@ public:
     /// Returns true if the port is currently open.
     bool IsOpen() const;
 
-    /// Write all bytes in data to the port. Returns false on error.
+    /// Write all bytes in data to the port. With BUSY flow control, waits up to
+    /// about a second for the module to accept them. Returns false on error.
     bool Write(const std::vector<uint8_t>& data);
 
     /// Read up to maxBytes from the port. Returns immediately with whatever
@@ -42,8 +45,8 @@ public:
     size_t BytesRx() const { return m_bytesRx; }
 
 private:
-    /// Apply 8N1, no flow control at the given baud.
-    bool ApplySettings(int baudRate);
+    /// Apply 8N1 at the given baud, optionally with CTS-gated output.
+    bool ApplySettings(int baudRate, bool busyFlowControl);
 
 #ifdef _WIN32
     void*  m_handle   = nullptr;   ///< HANDLE; nullptr = closed

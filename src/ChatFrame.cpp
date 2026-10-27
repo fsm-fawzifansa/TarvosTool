@@ -8,31 +8,42 @@ namespace ID {
     enum {
         SEND_BTN = wxID_HIGHEST + 100,
         INPUT_BOX,
-        SET_ADDR_BTN,
-        ADDR_INPUT,
-        SET_CHANNEL_BTN,
-        CHANNEL_INPUT,
+        APPLY_BTN,
     };
 }
 
 wxBEGIN_EVENT_TABLE(ChatFrame, wxFrame)
-    EVT_BUTTON(ID::SEND_BTN,          ChatFrame::OnSendBtn)
-    EVT_TEXT_ENTER(ID::INPUT_BOX,     ChatFrame::OnInputEnter)
-    EVT_BUTTON(ID::SET_ADDR_BTN,      ChatFrame::OnSetAddr)
-    EVT_TEXT_ENTER(ID::ADDR_INPUT,    ChatFrame::OnSetAddr)
-    EVT_BUTTON(ID::SET_CHANNEL_BTN,   ChatFrame::OnSetChannel)
-    EVT_TEXT_ENTER(ID::CHANNEL_INPUT, ChatFrame::OnSetChannel)
+    EVT_BUTTON(ID::SEND_BTN,      ChatFrame::OnSendBtn)
+    EVT_TEXT_ENTER(ID::INPUT_BOX, ChatFrame::OnInputEnter)
+    EVT_BUTTON(ID::APPLY_BTN,     ChatFrame::OnApply)
     EVT_CLOSE(ChatFrame::OnClose)
 wxEND_EVENT_TABLE()
 
-ChatFrame::ChatFrame(wxWindow* parent, SerialPort& serial)
+// Factory default RF channel (RADIO_DefaultRfChannel, manual 8.2.4).
+static constexpr int kDefaultChannel = 106;
+
+// Factory default RF profile 0 allows 128-byte packets (manual table 13).
+static constexpr size_t kDefaultMaxPacket = 128;
+
+static const wxColour kErrColour (255, 80, 80);
+static const wxColour kInfoColour(200, 200, 100);
+
+/// Parse a decimal number in [0, max]. Returns false on anything else.
+static bool ParseDecimal(const wxString& text, unsigned long max, unsigned long& out) {
+    wxString s = text;
+    s.Trim(true).Trim(false);
+    return !s.IsEmpty() && s.ToULong(&out, 10) && out <= max;
+}
+
+ChatFrame::ChatFrame(wxWindow* parent, SubmitFn submit)
     : wxFrame(parent, wxID_ANY, "Chat",
-              wxDefaultPosition, wxSize(580, 520),
+              wxDefaultPosition, wxSize(620, 540),
               wxDEFAULT_FRAME_STYLE | wxFRAME_FLOAT_ON_PARENT)
-    , m_serial(serial)
+    , m_submit(std::move(submit))
 {
-    SetMinSize(wxSize(500, 420));
+    SetMinSize(wxSize(540, 440));
     BuildUI();
+    SetModuleInfo(-1, 0);
     Centre();
 }
 
@@ -40,42 +51,33 @@ void ChatFrame::BuildUI() {
     wxFont mono(wxFontInfo(11).Family(wxFONTFAMILY_TELETYPE));
     auto* root = new wxBoxSizer(wxVERTICAL);
 
-    // ── Settings bar (dest addr + channel) ────────────────────────────────────
-    auto* settingsBox = new wxStaticBoxSizer(wxHORIZONTAL, this, "Configuration");
+    // ── Settings bar (runtime channel / destination) ──────────────────────────
+    auto* settingsBox = new wxStaticBoxSizer(wxVERTICAL, this, "Radio settings (runtime)");
+    auto* fieldsRow   = new wxBoxSizer(wxHORIZONTAL);
 
-    settingsBox->AddSpacer(4);
-    settingsBox->Add(new wxStaticText(this, wxID_ANY, "Dest Addr:"),
-                     0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+    auto addField = [&](const char* label, const wxString& value, const char* hint) {
+        fieldsRow->Add(new wxStaticText(this, wxID_ANY, label),
+                       0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+        auto* ctrl = new wxTextCtrl(this, wxID_ANY, value,
+                                    wxDefaultPosition, wxSize(70, -1));
+        ctrl->SetFont(mono);
+        ctrl->SetHint(hint);
+        fieldsRow->Add(ctrl, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 14);
+        return ctrl;
+    };
 
-    m_addrInput = new wxTextCtrl(this, ID::ADDR_INPUT, "0000",
-                                 wxDefaultPosition, wxSize(70, -1),
-                                 wxTE_PROCESS_ENTER);
-    m_addrInput->SetFont(mono);
-    m_addrInput->SetHint("2-byte hex");
-    settingsBox->Add(m_addrInput, 0, wxALIGN_CENTER_VERTICAL);
+    m_channelInput = addField("Channel:",   wxString::Format("%d", kDefaultChannel), "0-140");
+    m_netIdInput   = addField("Dest Net ID:", wxEmptyString, "0-255");
+    m_addrInput    = addField("Dest Addr:", wxEmptyString, "decimal");
 
-    m_setAddrBtn = new wxButton(this, ID::SET_ADDR_BTN, "Set",
-                                wxDefaultPosition, wxSize(50, -1));
-    settingsBox->Add(m_setAddrBtn, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, 4);
+    fieldsRow->AddStretchSpacer();
+    m_applyBtn = new wxButton(this, ID::APPLY_BTN, "Apply");
+    fieldsRow->Add(m_applyBtn, 0, wxALIGN_CENTER_VERTICAL);
 
-    settingsBox->AddSpacer(16);
+    settingsBox->Add(fieldsRow, 0, wxEXPAND | wxALL, 4);
 
-    settingsBox->Add(new wxStaticText(this, wxID_ANY, "Channel:"),
-                     0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
-
-    m_channelInput = new wxTextCtrl(this, ID::CHANNEL_INPUT, "00",
-                                    wxDefaultPosition, wxSize(50, -1),
-                                    wxTE_PROCESS_ENTER);
-    m_channelInput->SetFont(mono);
-    m_channelInput->SetHint("hex");
-    settingsBox->Add(m_channelInput, 0, wxALIGN_CENTER_VERTICAL);
-
-    m_setChannelBtn = new wxButton(this, ID::SET_CHANNEL_BTN, "Set",
-                                   wxDefaultPosition, wxSize(50, -1));
-    settingsBox->Add(m_setChannelBtn, 0, wxALIGN_CENTER_VERTICAL | wxLEFT, 4);
-
-    settingsBox->AddStretchSpacer();
-    settingsBox->AddSpacer(4);
+    m_modeLabel = new wxStaticText(this, wxID_ANY, wxEmptyString);
+    settingsBox->Add(m_modeLabel, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 4);
 
     root->Add(settingsBox, 0, wxEXPAND | wxALL, 8);
 
@@ -112,91 +114,158 @@ void ChatFrame::BuildUI() {
 }
 
 // ---------------------------------------------------------------------------
+// Module information from MainFrame
+// ---------------------------------------------------------------------------
+
+void ChatFrame::SetModuleInfo(int addrMode, size_t maxPacket) {
+    m_addrMode  = addrMode;
+    m_maxPacket = maxPacket;
+
+    m_netIdInput->Enable(addrMode >= 2);
+    m_addrInput->Enable(addrMode >= 1);
+    m_addrInput->SetHint(addrMode == 3 ? "0-65535" : "0-255");
+
+    wxString text;
+    switch (addrMode) {
+        case 0:
+            text = "Address mode 0: every message is received by all modules on the same channel.";
+            break;
+        case 1:
+            text = "Address mode 1: Dest Addr = the other module's MAC_SourceAddr (255 = broadcast).";
+            break;
+        case 2:
+        case 3:
+            text = wxString::Format("Address mode %d: Dest Net ID / Addr = the other module's "
+                                    "MAC_SourceNetID / MAC_SourceAddr (255%s = broadcast).",
+                                    addrMode, addrMode == 3 ? " / 65535" : "");
+            break;
+        default:
+            text = "Address mode unknown (could not read it from the module).";
+            break;
+    }
+    m_modeLabel->SetLabel(text + "\nThese settings are lost when the module resets.");
+    Layout();
+}
+
+// ---------------------------------------------------------------------------
 // Send text message
 // ---------------------------------------------------------------------------
+
+bool ChatFrame::Submit(uint8_t cmd, const std::vector<uint8_t>& payload) {
+    wxString err = m_submit(cmd, payload);
+    if (!err.IsEmpty()) {
+        Error(err);
+        return false;
+    }
+    return true;
+}
 
 void ChatFrame::Send() {
     wxString text = m_inputBox->GetValue().Trim(true).Trim(false);
     if (text.IsEmpty()) return;
 
     std::string utf8 = text.ToUTF8().data();
-    if (utf8.size() > 255) {
-        wxMessageBox("Message too long (max 255 bytes).", "Cannot Send",
-                     wxOK | wxICON_WARNING, this);
+    const size_t limit = m_maxPacket ? m_maxPacket : kDefaultMaxPacket;
+    if (utf8.size() > limit) {
+        wxMessageBox(wxString::Format("Message too long: %zu bytes, the RF profile allows %zu.",
+                                      utf8.size(), limit),
+                     "Cannot Send", wxOK | wxICON_WARNING, this);
         return;
     }
 
-    std::vector<uint8_t> payload(utf8.begin(), utf8.end());
-    SendCommand(TarvosProtocol::CMD_DATA_REQ, payload);
+    if (!Submit(TarvosProtocol::CMD_DATA_REQ, std::vector<uint8_t>(utf8.begin(), utf8.end())))
+        return;
     AppendLine("You", text, wxColour(100, 180, 255));
     m_inputBox->Clear();
 }
 
 // ---------------------------------------------------------------------------
-// Generic send command helper
+// Apply channel / destination (volatile runtime settings)
 // ---------------------------------------------------------------------------
 
-void ChatFrame::SendCommand(uint8_t cmd, const std::vector<uint8_t>& payload) {
-    auto frame = TarvosProtocol::BuildFrame(cmd, payload);
-    if (!m_serial.Write(frame)) {
-        AppendLine("ERR", "Send failed — is the device still connected?",
-                   wxColour(255, 80, 80));
+void ChatFrame::ApplySettings() {
+    unsigned long channel = 0, netId = 0, addr = 0;
+
+    if (!ParseDecimal(m_channelInput->GetValue(), 140, channel)) {
+        Error("Channel must be a number from 0 to 140.");
+        return;
     }
-}
-
-// ---------------------------------------------------------------------------
-// Set destination address (2 bytes, LSB first)
-// ---------------------------------------------------------------------------
-
-void ChatFrame::OnSetAddr(wxCommandEvent&) {
-    wxString addrStr = m_addrInput->GetValue().Trim();
-    if (addrStr.IsEmpty() || addrStr.Len() > 4) {
-        AppendLine("ERR", "Address must be 1-4 hex chars (2 bytes, LSB first)",
-                   wxColour(255, 80, 80));
+    if (m_addrMode >= 2 && !ParseDecimal(m_netIdInput->GetValue(), 255, netId)) {
+        Error("Dest Net ID must be a number from 0 to 255.");
+        return;
+    }
+    const unsigned long maxAddr = (m_addrMode == 3) ? 65535 : 255;
+    if (m_addrMode >= 1 && !ParseDecimal(m_addrInput->GetValue(), maxAddr, addr)) {
+        Error(wxString::Format("Dest Addr must be a number from 0 to %lu.", maxAddr));
         return;
     }
 
-    try {
-        uint16_t addr = std::stoul(addrStr.ToStdString(), nullptr, 16);
-        uint8_t lsb = static_cast<uint8_t>(addr & 0xFF);
-        uint8_t msb = static_cast<uint8_t>((addr >> 8) & 0xFF);
-
-        SendCommand(TarvosProtocol::CMD_SET_DESTADDR_REQ, {lsb, msb});
-        AppendLine("INFO", wxString::Format("Set dest address to 0x%04X", addr),
-                   wxColour(200, 200, 100));
-    } catch (...) {
-        AppendLine("ERR", "Invalid hex value", wxColour(255, 80, 80));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Set channel
-// ---------------------------------------------------------------------------
-
-void ChatFrame::OnSetChannel(wxCommandEvent&) {
-    wxString chanStr = m_channelInput->GetValue().Trim();
-    if (chanStr.IsEmpty() || chanStr.Len() > 2) {
-        AppendLine("ERR", "Channel must be 1-2 hex chars",
-                   wxColour(255, 80, 80));
+    if (!Submit(TarvosProtocol::CMD_SET_CHANNEL_REQ, { static_cast<uint8_t>(channel) }))
         return;
-    }
-
-    try {
-        uint8_t chan = static_cast<uint8_t>(std::stoul(chanStr.ToStdString(), nullptr, 16));
-        SendCommand(TarvosProtocol::CMD_SET_CHANNEL_REQ, {chan});
-        AppendLine("INFO", wxString::Format("Set channel to 0x%02X", chan),
-                   wxColour(200, 200, 100));
-    } catch (...) {
-        AppendLine("ERR", "Invalid hex value", wxColour(255, 80, 80));
+    if (m_addrMode >= 2 &&
+        !Submit(TarvosProtocol::CMD_SET_DESTNETID_REQ, { static_cast<uint8_t>(netId) }))
+        return;
+    if (m_addrMode >= 1) {
+        std::vector<uint8_t> payload{ static_cast<uint8_t>(addr & 0xFF) };
+        if (m_addrMode == 3) payload.push_back(static_cast<uint8_t>(addr >> 8)); // LSB first
+        Submit(TarvosProtocol::CMD_SET_DESTADDR_REQ, payload);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Receive (called by MainFrame on DATAEX_IND)
+// Results from MainFrame
 // ---------------------------------------------------------------------------
 
-void ChatFrame::ReceiveText(const std::string& text) {
-    AppendLine("Remote", wxString::FromUTF8(text), wxColour(120, 220, 120));
+void ChatFrame::OnConfirmation(uint8_t requestCmd, const TarvosProtocol::Frame& cnf) {
+    if (cnf.payload.empty()) return;
+    const uint8_t value = cnf.payload[0];
+
+    switch (requestCmd) {
+        case TarvosProtocol::CMD_DATA_REQ:
+            if (value != 0x00)
+                Error("Message not delivered: " + TarvosProtocol::StatusText(cnf.cmd, value));
+            break;
+        case TarvosProtocol::CMD_SET_CHANNEL_REQ:
+            Info(wxString::Format("Channel set to %d (%.3f MHz)",
+                                  value, TarvosProtocol::ChannelToMHz(value)));
+            break;
+        case TarvosProtocol::CMD_SET_DESTNETID_REQ:
+        case TarvosProtocol::CMD_SET_DESTADDR_REQ: {
+            const char* what = requestCmd == TarvosProtocol::CMD_SET_DESTNETID_REQ
+                               ? "Destination net ID" : "Destination address";
+            if (value == 0x00)
+                Info(wxString::Format("%s set", what));
+            else
+                Error(wxString::Format("%s not set: %s", what,
+                                       TarvosProtocol::StatusText(cnf.cmd, value)));
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+void ChatFrame::OnTimeout(uint8_t requestCmd) {
+    Error(requestCmd == TarvosProtocol::CMD_DATA_REQ
+          ? "Message not confirmed by the module (timeout)."
+          : "Setting not confirmed by the module (timeout).");
+}
+
+void ChatFrame::OnModuleRestarted() {
+    Info("Module restarted: channel and destination are back to their stored defaults. "
+         "Press Apply to set them again.");
+}
+
+void ChatFrame::ReceiveMessage(const TarvosProtocol::RxData& rx) {
+    wxString who = "Remote";
+    if (rx.netId >= 0)
+        who += wxString::Format(" %d.%d", rx.netId, rx.addr);
+    else if (rx.addr >= 0)
+        who += wxString::Format(" %d", rx.addr);
+
+    std::string text(rx.data.begin(), rx.data.end());
+    AppendLine(who, wxString::FromUTF8(text) + wxString::Format("   (%d dBm)", rx.rssiDbm),
+               wxColour(120, 220, 120));
 }
 
 // ---------------------------------------------------------------------------
@@ -227,12 +296,16 @@ void ChatFrame::AppendLine(const wxString& who, const wxString& text,
     m_chatLog->ShowPosition(m_chatLog->GetLastPosition());
 }
 
+void ChatFrame::Info(const wxString& text)  { AppendLine("INFO", text, kInfoColour); }
+void ChatFrame::Error(const wxString& text) { AppendLine("ERR",  text, kErrColour); }
+
 // ---------------------------------------------------------------------------
 // Event handlers
 // ---------------------------------------------------------------------------
 
 void ChatFrame::OnSendBtn(wxCommandEvent&)    { Send(); }
 void ChatFrame::OnInputEnter(wxCommandEvent&) { Send(); }
+void ChatFrame::OnApply(wxCommandEvent&)      { ApplySettings(); }
 
 void ChatFrame::OnClose(wxCloseEvent& evt) {
     Hide();

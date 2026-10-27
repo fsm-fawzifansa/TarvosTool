@@ -67,22 +67,37 @@ Open the folder and press **⌘⇧B** (macOS) to configure and build. IntelliSen
 1. Plug in the module.
    - **macOS:** check that its port exists with `ls /dev/cu.*`. Always use the `cu.*` node, not `tty.*`. The `tty.*` node waits for a carrier signal and will not work for host-initiated communication.
    - **Windows:** the module shows up as a COM port (for example `COM3`) in Device Manager under *Ports (COM & LPT)*.
-2. In TarvosTool click **Refresh**, pick the port, leave the baud rate at **115200** unless you changed it on the module, and click **Connect**.
+2. In TarvosTool click **Refresh**, pick the port, leave the baud rate at **115200** (the factory default) unless you changed `UART_Baudrate`, and click **Connect**.
+3. Optional: tick **BUSY flow control** before connecting if your board routes the module's BUSY pin to the adapter's CTS line. The tool then holds back each byte while the module is busy, as the manual requires. If BUSY is not wired to CTS, every write fails, so leave it off in that case.
 
-The status bar shows the connection state and the TX/RX byte counters.
+On connect the tool reads the module's address mode and RF profile (`GET_REQ` 4 and 1). The status bar shows them next to the connection state and TX/RX byte counters. You can read them again with **Module → Read Address Mode & RF Profile**.
 
 ### 2. Send commands
 
-Pick a command in the **Command Builder**. The parameter fields change to match it, and the exact frame that will be sent is previewed before you press **Send**. Values are hex bytes, for example `48 65 6C 6C 6F`.
+Pick a command in the **Command Builder**. The parameter fields change to match it, and the exact frame that will be sent is previewed before you press **Send**. Values are hex bytes, for example `48 65 6C 6C 6F`. If an input is invalid, the preview shows why instead of a frame.
 
-Sent frames (`→ TX`) and received frames (`← RX`) appear in the log, each followed by a decoded description. For example, selecting `RESET_REQ` and pressing **Send** transmits `02 05 00 07`, and the module answers with its confirmation and a `RESET_IND` once it is ready again.
+Sent frames (`→ TX`) and received frames (`← RX`) appear in the log, each followed by a decoded description. For example, `RESET_REQ` transmits `02 05 00 07`; the module answers with `RESET_CNF` and then `RESET_IND` once it is ready again.
+
+The tool follows the manual's rules for the command interface:
+
+- **One request at a time.** Requests are queued and each waits for its confirmation (up to 500 ms, 2 s for data) before the next one is sent.
+- **Address-dependent formats.** `DATAEX_REQ`, `SET_DESTNETID_REQ`, `SET_DESTADDR_REQ` and incoming `DATAEX_IND` frames are built and decoded for the module's address mode.
+- **User settings.** `SET_REQ` and `GET_REQ` use a list of the settings from the manual. Values are checked for size and range before sending, because the module itself does not check them and a wrong value can make it unreachable. Each `SET_REQ` asks for confirmation, since it writes flash (about 100,000 cycles). The new value applies after a reset; until then only `SET_REQ`, `GET_REQ` and `RESET_REQ` are allowed.
+- **Runtime settings.** `SET_CHANNEL_REQ`, `SET_DESTNETID_REQ`, `SET_DESTADDR_REQ` and `SET_PAPOWER_REQ` change volatile settings only. They are lost when the module resets.
+- **Transparent mode.** `SET_MODE_REQ` switches to transparent mode, where the module forwards raw UART data over the radio and no longer accepts commands. Received data is then shown raw. **Module → Return to Command Mode (+++)** sends the escape sequence to come back.
+- **Low-power modes.** After `SHUTDOWN_REQ` or `STANDBY_REQ` the module's UART is off until a falling edge on its WAKE_UP pin (the WAKE UP button on the EV-kit).
 
 ### 3. Chat between two modules
 
+With factory settings both modules are in address mode 0 on channel 106, where every message is a broadcast. In that case chat works without any setup.
+
 1. Connect each module in its own window (see below).
 2. Click **Open Chat** in both windows.
-3. In each chat window set **Dest Addr** (the other module's 2-byte address, hex) and **Channel** (hex, the same on both modules), and press **Set** next to each. The tool sends `SET_DESTADDR_REQ` and `SET_CHANNEL_REQ` for you.
-4. Type a message and press **Enter**. It is sent with `DATA_REQ` to the configured destination, and appears in the other window as a message from "Remote". Messages can be up to 255 bytes of UTF-8.
+3. Optional: set the radio settings in each chat window and press **Apply**. These are runtime settings and are lost when the module resets.
+   - **Channel** (0 to 140): must be the same on both modules.
+   - **Dest Net ID** (address modes 2 and 3): the other module's `MAC_SourceNetID`.
+   - **Dest Addr** (address modes 1 to 3): the other module's `MAC_SourceAddr`. Read it with `GET_REQ` → `MAC_SourceAddr`.
+4. Type a message and press **Enter**. It is sent with `DATA_REQ`. The other window shows it with the sender's address (if the address mode has one) and the signal strength. If the module reports a failure, such as no ACK or channel busy, the chat shows it. The maximum message length depends on the RF profile: 128 bytes for profiles 0 and 2, 64 for profile 4, 224 for profile 5.
 
 ### 4. Several modules at once
 
@@ -98,29 +113,30 @@ Frame layout (WE-ProWare):
 [STX=0x02] [CMD] [LEN] [PAYLOAD ...] [CS]
 ```
 
-`LEN` is the payload length in bytes (1 byte). `CS` is the XOR of every preceding byte. A confirmation code is the request code `| 0x40`, and an indication code is the request code `| 0x80`.
+`LEN` is the payload length in bytes (1 byte). `CS` is the XOR of every preceding byte. A confirmation code is the request code `| 0x40` (`DATAEX_REQ` is confirmed by `DATA_CNF`), and an indication code is the request code `| 0x80`.
 
-| CMD  | Name              | Purpose                                      |
-|------|-------------------|----------------------------------------------|
-| 0x00 | DATA_REQ          | Send data to the configured destination      |
-| 0x01 | DATAEX_REQ        | Send data with extended addressing           |
-| 0x04 | SET_MODE_REQ      | Switch operating mode                        |
-| 0x05 | RESET_REQ         | Software reset                               |
-| 0x06 | SET_CHANNEL_REQ   | Set RF channel                               |
-| 0x07 | SET_DESTNETID_REQ | Set destination network ID                   |
-| 0x08 | SET_DESTADDR_REQ  | Set destination address                      |
-| 0x09 | SET_REQ           | Write a non-volatile user setting            |
-| 0x0A | GET_REQ           | Read a non-volatile user setting             |
-| 0x0B | UNICAST_DATA_REQ  | Send data to a specific address              |
-| 0x0D | RSSI_REQ          | Read the last received signal strength       |
-| 0x0E | SHUTDOWN_REQ      | Shut the module down                         |
-| 0x0F | STANDBY_REQ       | Enter standby                                |
-| 0x10 | SET_PAPOWER_REQ   | Set PA output power                          |
-| 0x12 | FACTORY_RESET_REQ | Restore defaults and reset                   |
+| CMD  | Request           | Confirmation           | Purpose                                         |
+|------|-------------------|------------------------|-------------------------------------------------|
+| 0x00 | DATA_REQ          | DATA_CNF (0x40)        | Send data to the configured destination         |
+| 0x01 | DATAEX_REQ        | DATA_CNF (0x40)        | Send data on a given channel to a given address |
+| 0x04 | SET_MODE_REQ      | SET_MODE_CNF (0x44)    | Switch to transparent mode                      |
+| 0x05 | RESET_REQ         | RESET_CNF (0x45)       | Software reset                                  |
+| 0x06 | SET_CHANNEL_REQ   | SET_CHANNEL_CNF (0x46) | Set RF channel (runtime)                        |
+| 0x07 | SET_DESTNETID_REQ | SET_DESTNETID_CNF (0x47) | Set destination network ID (runtime)          |
+| 0x08 | SET_DESTADDR_REQ  | SET_DESTADDR_CNF (0x48) | Set destination address (runtime)              |
+| 0x09 | SET_REQ           | SET_CNF (0x49)         | Write a user setting to flash                   |
+| 0x0A | GET_REQ           | GET_CNF (0x4A)         | Read a user setting                             |
+| 0x0D | RSSI_REQ          | RSSI_CNF (0x4D)        | RSSI of the last received packet                |
+| 0x0E | SHUTDOWN_REQ      | SHUTDOWN_CNF (0x4E)    | Enter shutdown mode                             |
+| 0x0F | STANDBY_REQ       | STANDBY_CNF (0x4F)     | Enter standby mode                              |
+| 0x11 | SET_PAPOWER_REQ   | SET_PAPOWER_CNF (0x51) | Set TX power (runtime)                          |
+| 0x12 | FACTORY_RESET_REQ | FACTORY_RESET_CNF (0x52) | Restore defaults and reset                    |
 
-Responses and events the tool decodes: `DATA_CNF` (0x40), `RESET_CNF` (0x45), `SET_CNF` (0x49), `GET_CNF` (0x4A), `FACTORY_RESET_CNF` (0x52), `DATAEX_IND` (0x81, incoming radio data followed by an RSSI byte), `RESET_IND` (0x85) and `STANDBY_IND` (0x8F).
+Indications the tool decodes: `REPEAT_IND` (0x80), `DATAEX_IND` (0x81, incoming radio data with sender address and RSSI), `RESET_IND` (0x85), `STANDBY_IND` (0x8F, woke up from standby) and `DUTYCYCLE_IND` (0x90, enabled through `CfgFlags`).
 
-Check the Tarvos-e manual for your firmware version for the exact meaning of each setting and parameter.
+All user settings from chapter 8 of the manual are available in `SET_REQ` / `GET_REQ`, from `UART_Baudrate` (0) to `FirmwareVersion` (33). Values read with `GET_REQ` are decoded, for example the channel as a frequency or the firmware version as `major.minor.patch`.
+
+The protocol follows the Tarvos-e user manual v2.18. Check the manual for your firmware version before changing settings.
 
 ---
 
@@ -133,7 +149,7 @@ TarvosTool/
 ├── .github/workflows/       CI build for macOS and Windows
 ├── include/
 │   ├── SerialPort.h         serial port (POSIX cu.* / Win32 COM, 8N1)
-│   ├── TarvosProtocol.h     frame builder, stateful parser, command constants
+│   ├── TarvosProtocol.h     frame builder, parser, commands, user settings
 │   ├── MainFrame.h          main window: connection, log, command builder
 │   └── ChatFrame.h          chat window
 └── src/
@@ -144,7 +160,7 @@ TarvosTool/
     └── ChatFrame.cpp
 ```
 
-To add a command, add an entry to the command table at the top of `src/MainFrame.cpp` and, if you want a named constant, to `TarvosProtocol.h`.
+Command codes, the user settings table and frame decoding are in `TarvosProtocol`. The Command Builder's table of commands and their inputs is at the top of `src/MainFrame.cpp`.
 
 ---
 

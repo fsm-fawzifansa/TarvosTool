@@ -1,0 +1,29 @@
+# Build output
+build/
+*.o
+*.a
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+compile_commands.json
+
+# macOS bundle artifacts
+*.app/
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# VS Code local settings (keep tasks.json and c_cpp_properties.json)
+.vscode/settings.json
+.vscode/launch.json
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+xcuserdata/

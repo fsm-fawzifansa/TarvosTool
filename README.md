@@ -166,7 +166,11 @@ The protocol follows the Tarvos-e user manual v2.18. Check the manual for your f
 TarvosTool/
 ├── CMakeLists.txt
 ├── LICENSE
-├── .github/workflows/       CI build for macOS and Windows
+├── CONTRIBUTING.md          how to contribute, review process, pull request size limit
+├── CODE_OF_CONDUCT.md
+├── CONTRIBUTORS.md          credits
+├── docs/screenshots/        images used in this README
+├── .github/                 CI build for macOS and Windows, code owners, pull request template
 ├── include/
 │   ├── SerialPort.h         serial port (POSIX cu.* / Win32 COM, 8N1)
 │   ├── TarvosProtocol.h     frame builder, parser, commands, user settings
@@ -181,6 +185,12 @@ TarvosTool/
 ```
 
 Command codes, the user settings table and frame decoding are in `TarvosProtocol`. The Command Builder's table of commands and their inputs is at the top of `src/MainFrame.cpp`.
+
+---
+
+## Contributing
+
+Bug reports, hardware reports and pull requests are welcome. Every change is reviewed by the maintainer before it is merged, and pull requests are kept small (at most 300 changed lines). Read [CONTRIBUTING.md](CONTRIBUTING.md) first, and note that everyone taking part follows the [Code of Conduct](CODE_OF_CONDUCT.md). Contributors are credited in [CONTRIBUTORS.md](CONTRIBUTORS.md).
 
 ---
 

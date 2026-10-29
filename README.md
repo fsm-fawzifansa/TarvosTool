@@ -13,6 +13,26 @@ It speaks the module's binary WE-ProWare serial protocol. Built with C++17 and w
 
 ---
 
+## Screenshots
+
+![Main window on Windows](docs/screenshots/windows-main.png)
+
+*Main window on Windows: the Communication Log shows each frame with a decoded description, and the Command Builder previews the bytes before they are sent.*
+
+![Chat window on Windows](docs/screenshots/windows-chat.png)
+
+*The chat window, with the runtime radio settings (channel and destination) above the conversation.*
+
+![Main window on macOS](docs/screenshots/macos-main.png)
+
+*The same tool on macOS. The Command Builder is set up to write `MAC_DefaultDestAddr`.*
+
+![Command list on macOS](docs/screenshots/macos-command-list.png)
+
+*All request commands are available in the Command Builder.*
+
+---
+
 ## Requirements
 
 | | macOS | Windows |

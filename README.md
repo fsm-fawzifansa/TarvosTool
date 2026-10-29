@@ -1,5 +1,7 @@
 # TarvosTool
 
+<sub>*This project was created with the help of AI tools.*</sub>
+
 A macOS and Windows desktop tool for talking to **Würth Elektronik Tarvos-e** radio modules over a USB serial connection (FTDI VCP → UART). Use it to:
 
 - send any of the module's documented commands from a **Command Builder**, with a live preview of the exact bytes on the wire,

@@ -19,10 +19,34 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    env:
+      # vcpkg stores the packages it builds here. The folder is cached between
+      # runs, so wxWidgets is only compiled when the cache is empty or outdated.
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
     steps:
       - uses: actions/checkout@v4
+      - name: Create the vcpkg cache folder
+        run: New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE
+      - name: Cache key (changes weekly, so the cache follows runner image updates)
+        id: week
+        run: echo "value=$(Get-Date -UFormat '%Y-%V')" >> $env:GITHUB_OUTPUT
+      - name: Restore the vcpkg cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ github.workspace }}\vcpkg-cache
+          key: vcpkg-wx-${{ runner.os }}-${{ steps.week.outputs.value }}
+          restore-keys: vcpkg-wx-${{ runner.os }}-
       - name: Install wxWidgets (vcpkg)
         run: vcpkg install wxwidgets:x64-windows
+      - name: Save the vcpkg cache
+        # Saved right after the install, before the build, so a failing build
+        # does not throw away the 20 minutes spent on wxWidgets.
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}\vcpkg-cache
+          key: vcpkg-wx-${{ runner.os }}-${{ steps.week.outputs.value }}
       - name: Build
         run: |
           cmake -S . -B build -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
